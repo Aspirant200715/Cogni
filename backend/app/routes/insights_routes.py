@@ -1,0 +1,64 @@
+# backend/app/routes/insights_routes.py
+from fastapi import APIRouter, HTTPException, Query
+from app.engines.shadow_engine import ShadowEngine
+from app.engines.resonance_engine import ResonanceEngine
+from app.engines.contagion_engine import ContagionEngine
+from app.models.memory_types import APIResponse
+
+router = APIRouter(prefix="/insights", tags=["insights"])
+
+@router.get("/shadow", response_model=APIResponse)
+async def get_shadow_prediction(days: int = Query(7, description="Days to analyze")):
+    """Get Cognitive Shadow prediction"""
+    try:
+        engine = ShadowEngine()
+        result = await engine.get_prediction(days=days)
+        return APIResponse(
+            status="success",
+            data=result,
+            demo_mode=result.get("demo_mode", True)
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/patterns", response_model=APIResponse)
+async def get_learning_patterns():
+    """Get summarized learning patterns"""
+    try:
+        engine = ShadowEngine()
+        result = await engine.get_learning_patterns()
+        return APIResponse(
+            status="success",
+            data=result,
+            demo_mode=result.get("demo_mode", True)
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/resonance", response_model=APIResponse)
+async def get_resonance(topic: str = Query(..., description="Topic to find connections for")):
+    """Find hidden conceptual connections"""
+    try:
+        engine = ResonanceEngine()
+        result = await engine.find_connections(topic)
+        return APIResponse(
+            status="success",
+            data=result,
+            demo_mode=result.get("demo_mode", True)
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/contagion", response_model=APIResponse)
+async def get_contagion(error_pattern: str = Query(..., description="Error pattern to find peer insights")):
+    """Get community insights from anonymized peer data"""
+    try:
+        engine = ContagionEngine()
+        result = await engine.get_community_insights(error_pattern)
+        return APIResponse(
+            status="success",
+            data=result,
+            demo_mode=result.get("demo_mode", True)
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

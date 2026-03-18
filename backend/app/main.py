@@ -1,13 +1,11 @@
 # backend/app/main.py
-"""
-🧠 Cogni FastAPI Application
-Main entry point for the backend API
-"""
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routes import study_routes, memory_routes, health_routes
 
-# Create FastAPI app
+# Import all routes
+from app.routes import study_routes, memory_routes, health_routes
+from app.routes import socratic_routes, insights_routes  # ← ADD THESE
+
 app = FastAPI(
     title="Cogni API",
     description="Metacognitive Study Companion - Powered by Hindsight Memory",
@@ -16,28 +14,31 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
-# CORS Middleware (allow frontend to call backend)
+# CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",  # Next.js dev
-        "http://127.0.0.1:3000",
-        "*",  # Allow all for hackathon demo (restrict in production)
-    ],
+    allow_origins=["*"],  # Allow all for hackathon demo
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Include API routes
+# Include all routers
 app.include_router(study_routes.router)
 app.include_router(memory_routes.router)
 app.include_router(health_routes.router)
+app.include_router(socratic_routes.router)  # ← ADD THIS
+app.include_router(insights_routes.router)  # ← ADD THIS
 
-# Root endpoint
+# Compatibility aliases: also expose all APIs under /api/*
+app.include_router(study_routes.router, prefix="/api")
+app.include_router(memory_routes.router, prefix="/api")
+app.include_router(health_routes.router, prefix="/api")
+app.include_router(socratic_routes.router, prefix="/api")
+app.include_router(insights_routes.router, prefix="/api")
+
 @app.get("/")
 async def root():
-    """API root - health check"""
     return {
         "name": "Cogni API",
         "version": "1.0.0",
@@ -52,8 +53,6 @@ async def root():
         ]
     }
 
-# Health check endpoint
 @app.get("/health")
 async def health():
-    """Quick health check for deployments"""
-    return {"status": "ok", "service": "cogni-backend"}
+    return {"status": "ok", "service": "cogni-backend", "demo_mode": True}

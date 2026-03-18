@@ -1,0 +1,106 @@
+/* frontend/src/app/globals.css */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --foreground-rgb: 255, 255, 255;
+  --background-start-rgb: 11, 16, 32;
+  --background-end-rgb: 36, 26, 74;
+}
+
+body {
+  color: rgb(var(--foreground-rgb));
+  background:
+    radial-gradient(1200px 600px at 10% 0%, rgba(34, 211, 238, 0.16), transparent 45%),
+    radial-gradient(800px 500px at 85% 20%, rgba(250, 204, 21, 0.12), transparent 50%),
+    linear-gradient(165deg, rgb(var(--background-start-rgb)) 0%, rgb(var(--background-end-rgb)) 100%);
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.study-shell {
+  position: relative;
+}
+
+.study-shell::before {
+  content: "";
+  position: absolute;
+  inset: 12% 8% auto auto;
+  width: 280px;
+  height: 280px;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(20, 184, 166, 0.2) 0%, rgba(20, 184, 166, 0) 70%);
+  pointer-events: none;
+}
+
+.study-shell::after {
+  content: "";
+  position: absolute;
+  inset: auto auto 8% 10%;
+  width: 240px;
+  height: 240px;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(251, 191, 36, 0.16) 0%, rgba(251, 191, 36, 0) 70%);
+  pointer-events: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.message-enter {
+  animation: message-rise 220ms ease-out both;
+}
+
+@keyframes message-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.safe-bottom {
+  padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
+}
+
+@media (max-width: 640px) {
+  .study-shell::before,
+  .study-shell::after {
+    opacity: 0.7;
+    transform: scale(0.75);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message-enter {
+    animation: none;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1e293b;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
