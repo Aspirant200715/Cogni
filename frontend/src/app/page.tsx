@@ -371,7 +371,40 @@ export default function ChatPage() {
         }
 
         case "memory": {
-          response = await api.getMemories(10);
+          // Fetch enhanced memory data: timeline + what-cogni-knows
+          const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+          
+          try {
+            // Fetch timeline for learning progression
+            const timelineRes = await fetch(`${API_URL}/memory/timeline?user_id=${userId}`, {
+              method: "GET",
+              headers: { "Content-Type": "application/json" }
+            });
+            const timelineRawData = timelineRes.ok ? await timelineRes.json() : null;
+            // Extract data from APIResponse wrapper
+            const timelineData = timelineRawData?.data || timelineRawData;
+            
+            // Fetch "What Cogni knows about you" summary
+            const cogniRes = await fetch(`${API_URL}/memory/what-cogni-knows?user_id=${userId}`, {
+              method: "GET",
+              headers: { "Content-Type": "application/json" }
+            });
+            const cogniRawData = cogniRes.ok ? await cogniRes.json() : null;
+            // Extract data from APIResponse wrapper
+            const cogniData = cogniRawData?.data || cogniRawData;
+            
+            response = {
+              data: {
+                timeline: timelineData,
+                cogni_knows: cogniData,
+                enhanced_memory: true
+              },
+              demo_mode: timelineRawData?.demo_mode || cogniRawData?.demo_mode || false
+            };
+          } catch (err) {
+            console.error("Memory fetch error:", err);
+            response = await api.getMemories(10);
+          }
           break;
         }
 
@@ -1748,6 +1781,68 @@ function formatResponse(
     }
 
     case "memory": {
+      // Handle enhanced memory with timeline and "what cogni knows"
+      const timeline = (apiData.timeline as GenericRecord) || null;
+      const cogniKnows = (apiData.cogni_knows as GenericRecord) || null;
+      
+      if (cogniKnows && cogniKnows.summary) {
+        // NEW: Display impressive "What Cogni knows about you" summary + timeline
+        const timelineData = timeline as GenericRecord;
+        const timelineEntries = (timelineData?.timeline as GenericRecord[]) || [];
+        const topicMetrics = (timelineData?.topic_confidence_metrics as GenericRecord) || {};
+        
+        // Build confidence growth visualization
+        let confidenceVisualization = "";
+        const topicKeys = Object.keys(topicMetrics);
+        if (topicKeys.length > 0) {
+          confidenceVisualization = "\n\n### **📈 Confidence Growth by Topic**\n\n";
+          for (const topic of topicKeys.slice(0, 5)) {
+            const metrics = topicMetrics[topic] as GenericRecord;
+            const improvement = Number(metrics.improvement || 0);
+            const current = Number(metrics.current_confidence || 0.5);
+            const initial = Number(metrics.initial_confidence || 0.3);
+            const sessions = Number(metrics.sessions_studied || 1);
+            
+            const confBar = "█".repeat(Math.round(current * 10)) + "░".repeat(10 - Math.round(current * 10));
+            const direction = improvement > 0 ? "📈 +" : improvement < 0 ? "📉 " : "→ ";
+            
+            confidenceVisualization += `**${topic}**\n`;
+            confidenceVisualization += `${confBar} ${Math.round(current * 100)}% (${direction}${Math.round(improvement * 100)}% over ${sessions} session${sessions > 1 ? 's' : ''})\n\n`;
+          }
+        }
+        
+        // Build timeline summary
+        let timelineSummary = "";
+        if (timelineEntries.length > 0) {
+          timelineSummary = `\n\n### **⏱️ Learning Timeline (${timelineEntries.length} sessions)**\n\n`;
+          timelineSummary += timelineEntries.slice(0, 10).map((e, idx) => {
+            const ent = e as GenericRecord;
+            const ts = String(ent.timestamp || "");
+            const topic = String(ent.topic || "general");
+            const conf = Math.round(Number(ent.confidence || 0.75) * 100);
+            const dateStr = ts ? new Date(ts).toLocaleDateString() : "Unknown date";
+            return `${idx + 1}. **${topic}** (${conf}% confidence) - ${dateStr}`;
+          }).join("\n");
+          
+          if (timelineEntries.length > 10) {
+            timelineSummary += `\n...and ${timelineEntries.length - 10} more sessions`;
+          }
+        }
+        
+        const content = String(cogniKnows.summary || "") + confidenceVisualization + timelineSummary;
+        
+        return {
+          content,
+          metadata: {
+            ...metadata,
+            memory_type: "enhanced_with_timeline",
+            total_sessions: timeline?.total_sessions || 0,
+            topics_studied: timeline?.total_topics || 0
+          }
+        };
+      }
+      
+      // Fallback to original memory format
       const memories = Array.isArray(apiData.memories)
         ? (apiData.memories as GenericRecord[])
         : [];

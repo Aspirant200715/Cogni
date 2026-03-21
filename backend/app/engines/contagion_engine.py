@@ -62,60 +62,64 @@ class ContagionEngine:
     async def get_community_insights(self, error_pattern: str, user_id: str = "anonymous") -> Dict[str, Any]:
         """
         Get insights personalized to THIS student's learning history.
-        Uses Hindsight to query actual peer data for the specific topic/input.
-        Treats error_pattern as topic internally and generates a learning plan.
+        HINDSIGHT-FIRST PRIORITY CHAIN (Deterministic, not random):
         
-        Pipeline:
-        1. Query Hindsight for peer data on this specific topic
-        2. Recall student's personal learning history
-        3. Generate topic-specific strategies using LLM
-        4. Generate mentor-guided learning plan
-        5. Return personalized recommendations (backward compatible)
+        1. Extract strategies from Hindsight-backed personal study history (deterministic)
+        2. Query peer patterns from Hindsight community data (deterministic)
+        3. Use LLM only for personalization refinement (when memory exists)
+        4. Fall back to curated strategies (always available)
         
-        CRITICAL: Automatically retains this interaction to hindsight for future recalls.
+        This ensures responses are grounded in real memory, not random LLM generation.
         """
-        # UPGRADE: Treat error_pattern as topic internally
         topic = error_pattern
-
+        
         insights = await self.hindsight.get_user_insights(user_id)
         memory_context = self._format_insights(insights)
         
-        # Step 1: Query Hindsight for peer insights on THIS TOPIC
-        hindsight_data = await self.hindsight.recall_global_contagion(topic)
-        
-        # Step 2: Recall THIS STUDENT'S learning history
+        # PRIORITY 1: Extract strategies from THIS STUDENT'S actual learning history
         student_memories = await self.hindsight.recall_all_memories(limit=20)
         personal_context = await self._extract_personal_patterns(
             student_memories=student_memories,
             error_pattern=topic
         )
         
-        # Step 3: Generate topic-specific strategies using LLM + Hindsight data
-        strategies = await self._generate_topic_strategies(
-            topic=topic,
-            personal_context=personal_context,
-            hindsight_data=hindsight_data,
-            memory_context=memory_context
-        )
+        # Deterministic extraction of personal strategies (no LLM randomness)
+        personal_strategies = self._extract_personal_strategies(personal_context, topic)
         
-        # Step 4: Refine using LLM for personalization
+        # PRIORITY 2: Query Hindsight for peer insights on THIS TOPIC
+        hindsight_data = await self.hindsight.recall_global_contagion(topic)
+        
+        # PRIORITY 3: Merge personal + peer strategies, ranked by relevance
+        all_strategies = personal_strategies  # Start with what worked for THIS STUDENT
+        if hindsight_data.get("community_size", 0) > 0:
+            # Add peer strategies but prioritize personal ones
+            all_strategies.extend(self._extract_community_strategies(hindsight_data))
+        
+        all_strategies = self._deduplicate_strategies(all_strategies)
+        
+        # PRIORITY 4: Fall back to curated strategies if still empty
+        if not all_strategies:
+            all_strategies = self._get_demo_strategies(topic)
+        
+        # PRIORITY 5: Use LLM only for refinement if we have personal history
         refined_result = await self._refine_for_student(
             error_pattern=topic,
-            strategies=strategies,
+            strategies=all_strategies,
             personal_context=personal_context,
             memory_context=memory_context
         )
         
-        # UPGRADE: Generate learning plan (NEW)
+        # Generate learning plan (uses Hindsight + personal context)
         peer_strategies = hindsight_data.get("top_strategy", "")
         learning_plan = await self._generate_learning_plan(
             topic=topic,
             peer_strategies=peer_strategies,
             personal_context=personal_context,
-            memory_context=memory_context
+            memory_context=memory_context,
+            personal_strategies=personal_strategies
         )
         
-        # Step 5: Build response (EXACT same format - backward compatible + NEW learning_plan)
+        # Build response (backward compatible + improvements)
         from uuid import uuid4
         response_id = str(uuid4())
         result = {
@@ -127,18 +131,20 @@ class ContagionEngine:
             "success_rate": refined_result.get("success_rate", 0.79),
             "privacy_note": "Personalized based on your learning history + peer patterns",
             "additional_strategies": refined_result.get("strategies", []),
-            "learning_plan": learning_plan,  # UPGRADE: NEW FIELD (safe to add)
-            "demo_mode": hindsight_data.get("demo_mode", True)
+            "learning_plan": learning_plan,
+            "demo_mode": hindsight_data.get("demo_mode", True),
+            "grounded_in_memory": len(personal_strategies) > 0  # NEW: Show if grounded in real memory
         }
         
         # ⚡ CRITICAL: Retain this interaction to hindsight for future recalls
         await self._retain_interaction(
-            content=f"Contagion query for {topic}: received {result['community_size']} peer insights",
+            content=f"Contagion query for {topic}: {len(personal_strategies)} personal strategies + {len(all_strategies)} total strategies",
             user_id=user_id,
             topic=topic,
             engine_feature="contagion",
             interaction_data={
                 "community_size": result["community_size"],
+                "personal_strategies_count": len(personal_strategies),
                 "success_rate": result["success_rate"],
                 "strategy": str(result.get("top_strategy", ""))[:100]
             }
@@ -188,6 +194,97 @@ class ContagionEngine:
             "learning_style": learning_style,
             "confidence": min(0.95, 0.5 + (len(student_memories) * 0.05))  # More memories = higher confidence
         }
+    
+    def _extract_personal_strategies(self, personal_context: Dict[str, Any], topic: str) -> List[Dict[str, Any]]:
+        """
+        DETERMINISTIC extraction of strategies from student's successful history.
+        No LLM randomness - grounded in real memory.
+        """
+        strategies = []
+        
+        # Extract successful strategies from memory
+        for successful in personal_context.get("successful_strategies", []):
+            if successful:
+                strategies.append({
+                    "strategy": successful[:120],
+                    "success_rate": 0.85,
+                    "source": "from_your_learning_history"
+                })
+        
+        # Map past struggles to recommended strategies
+        for struggle in personal_context.get("past_struggles", [])[:2]:
+            if struggle:
+                # Generate practical strategy for this struggle
+                counter_strategy = self._generate_counter_strategy(struggle, topic)
+                if counter_strategy:
+                    strategies.append({
+                        "strategy": counter_strategy,
+                        "success_rate": 0.82,
+                        "source": "addressing_your_past_struggles"
+                    })
+        
+        return strategies
+    
+    def _generate_counter_strategy(self, struggle: str, topic: str) -> str:
+        """
+        Generate a practical counter-strategy for a specific struggle.
+        Deterministic - not random.
+        """
+        struggle_lower = struggle.lower()
+        
+        # Map struggles to counter-strategies
+        if any(word in struggle_lower for word in ["confused", "unclear", "understand"]):
+            return f"Work through detailed tutorials or visualizations specific to {topic}"
+        elif any(word in struggle_lower for word in ["hard", "difficulty", "can't"]):
+            return f"Start with simpler variants of {topic} and gradually increase complexity"
+        elif any(word in struggle_lower for word in ["error", "wrong", "failed", "mistake"]):
+            return f"Trace through working examples step-by-step to identify your error patterns"
+        elif any(word in struggle_lower for word in ["forget", "remember", "retention"]):
+            return f"Practice {topic} regularly with spaced repetition and varied problems"
+        else:
+            return f"Practice {topic} with focused exercises and track your improvements"
+    
+    def _extract_community_strategies(self, hindsight_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Extract strategies from community/peer data.
+        """
+        strategies = []
+        
+        if hindsight_data.get("top_strategy"):
+            strategies.append({
+                "strategy": f"Peer success: {hindsight_data.get('top_strategy')}",
+                "success_rate": hindsight_data.get("success_rate", 0.79),
+                "source": "from_peer_community"
+            })
+        
+        # Add additional community strategies
+        for strat in hindsight_data.get("additional_strategies", [])[:3]:
+            if isinstance(strat, dict) and strat.get("strategy"):
+                strategies.append({
+                    "strategy": strat.get("strategy"),
+                    "success_rate": strat.get("success_rate", 0.75),
+                    "source": "from_peer_community"
+                })
+        
+        return strategies
+    
+    def _deduplicate_strategies(self, strategies: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Remove duplicate strategies and sort by success rate.
+        """
+        seen = set()
+        unique = []
+        
+        for s in strategies:
+            text = s.get("strategy", "").lower()[:50]
+            if text not in seen:
+                seen.add(text)
+                unique.append(s)
+        
+        # Sort by success rate (descending)
+        unique.sort(key=lambda s: s.get("success_rate", 0.5), reverse=True)
+        
+        return unique[:5]
     
     async def _generate_topic_strategies(
         self,
@@ -322,15 +419,20 @@ Success: [0.75-0.95]"""
         topic: str,
         peer_strategies: str,
         personal_context: Dict[str, Any],
-        memory_context: str = ""
+        memory_context: str = "",
+        personal_strategies: List[Dict[str, Any]] = None
     ) -> str:
         """
         UPGRADE: Generate a mentor-guided learning plan for the topic using LLM.
         
+        Incorporates personal successful strategies and peer patterns.
         Returns a clean, readable roadmap with 4-6 steps.
         Each step explains WHAT to do and WHY.
         No percentages, bullet symbols, or meta explanations.
         """
+        if personal_strategies is None:
+            personal_strategies = []
+        
         if not self.llm.available:
             # Safe fallback
             return f"Start learning {topic} by breaking it into smaller concepts and practicing step-by-step."
@@ -338,20 +440,25 @@ Success: [0.75-0.95]"""
         # Build context
         learning_style = personal_context.get("learning_style", "adaptive")
         peer_benefit = f" What helped others: {peer_strategies}." if peer_strategies else ""
+        personal_benefit = ""
+        
+        if personal_strategies:
+            personal_strats_text = "; ".join([
+                s.get("strategy", "")[:60] for s in personal_strategies[:3]
+            ])
+            personal_benefit = f" What's worked for you before: {personal_strats_text}."
         
         prompt = f"""User history:
     {memory_context}
 
     Current question:
-    Create a learning roadmap for {topic}.
+    Create a personalized learning roadmap for {topic}.
 
-    Instruction:
-    Adapt explanation based on user's past struggles.
-
-    You are a mentor creating a personalized learning roadmap.
+    You are a mentor creating a learning plan tailored to THIS STUDENT.
 
 Topic: {topic}
 Student's learning style: {learning_style}
+{personal_benefit}
 {peer_benefit}
 
 Create a structured learning plan for {topic}.
@@ -363,9 +470,10 @@ CRITICAL REQUIREMENTS:
 - NO percentage signs or numbers like "70%"
 - NO meta explanations like "let me explain" or "here's why"
 - NO thinking steps or brackets like <think>
-- NO truncation - complete thoughts only
+- NO truncation - complete thoughtsonly
 - Mentor-like, encouraging, practical tone
 - Focus on understanding and mastery
+- Incorporate what's worked for this student before when relevant
 
 Format: Just the plan text, nothing else."""
 

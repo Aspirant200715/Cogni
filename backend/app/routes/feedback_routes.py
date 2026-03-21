@@ -635,10 +635,6 @@ async def get_progress(
     learned_topics_data = await _get_learned_topics_from_hindsight(user_id)
     studied_topics = learned_topics_data.get("studied_topics", [])
     
-    # If no studied topics found, show a helpful message
-    if not studied_topics:
-        studied_topics = ["[No study sessions recorded yet. Start learning to track progress!]"]
-    
     # Filter by topic if provided
     if topic and topic.strip():
         topic_lower = topic.strip().lower()
@@ -653,7 +649,7 @@ async def get_progress(
             "user_id": user_id,
             "topic": topic or "all",
             "weak_topics": extract_topics(normalized),
-            "studied_topics": studied_topics,  # What user has actually studied
+            "studied_topics": studied_topics,
             "recent_topics": learned_topics_data.get("recent_topics", []),
             "high_confidence_topics": learned_topics_data.get("high_confidence_topics", []),
             "improvement_score": calculate_improvement(normalized),
@@ -661,6 +657,13 @@ async def get_progress(
             "insights_count": len(normalized),
             "study_sessions_count": learned_topics_data.get("study_count", 0),
             "orchestrator_stage": "user_progress_computed",
+            # NEW: Guide users to enhanced memory visualizations
+            "view_impressive_memory_features": {
+                "timeline_url": f"/memory/timeline?user_id={user_id}",
+                "confidence_graph_url": f"/memory/timeline?user_id={user_id}",
+                "learning_profile_url": f"/memory/what-cogni-knows?user_id={user_id}",
+                "insight": "Visit /memory/timeline for learning progression & /memory/what-cogni-knows for your personalized learning profile!"
+            }
         },
         demo_mode=bool(insights and insights[0].get("demo_mode")) if isinstance(insights, list) else True,
     )
