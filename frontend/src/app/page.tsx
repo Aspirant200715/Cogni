@@ -34,6 +34,18 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
+import {
+  MemoryTimeline,
+  type TimelineEntry,
+} from "@/components/memory/MemoryTimeline";
+import {
+  ConfidenceGraph,
+  type ConfidenceSeries,
+} from "@/components/memory/ConfidenceGraph";
+import {
+  CognitiveSummary,
+  type LearningProfile,
+} from "@/components/memory/CognitiveSummary";
 
 type FeatureMode =
   | "archaeology"
@@ -41,7 +53,8 @@ type FeatureMode =
   | "shadow"
   | "resonance"
   | "contagion"
-  | "memory";
+  | "memory"
+  | "graphs";
 
 interface Message {
   id: string;
@@ -106,6 +119,12 @@ const FEATURES: {
     icon: <MagicWandIcon className="h-5 w-5" />,
     description: "View what you remember",
   },
+  {
+    id: "graphs",
+    label: "Graphs",
+    icon: <CubeIcon className="h-5 w-5" />,
+    description: "Visualize student performance trends",
+  },
 ];
 
 const QUICK_PROMPTS: Record<FeatureMode, string[]> = {
@@ -141,6 +160,11 @@ const QUICK_PROMPTS: Record<FeatureMode, string[]> = {
     "Show latest study memories",
     "What patterns are stored for me?",
   ],
+  graphs: [
+    "Refresh performance graphs",
+    "Show confidence trends by topic",
+    "Analyze my learning performance",
+  ],
 };
 export default function ChatPage() {
   // Intro screen state
@@ -173,6 +197,14 @@ export default function ChatPage() {
   const [quizQuestions, setQuizQuestions] = useState<QuizQuestion[]>([]);
   const [quizAnswers, setQuizAnswers] = useState<string[]>([]);
   const [quizStartedAt, setQuizStartedAt] = useState<number | null>(null);
+  const [memoryVizLoading, setMemoryVizLoading] = useState(false);
+  const [memoryVizError, setMemoryVizError] = useState<string | null>(null);
+  const [memoryTimelineEntries, setMemoryTimelineEntries] = useState<TimelineEntry[]>([]);
+  const [memoryConfidenceSeries, setMemoryConfidenceSeries] = useState<ConfidenceSeries[]>([]);
+  const [memorySummaryText, setMemorySummaryText] = useState("");
+  const [memoryLearningProfile, setMemoryLearningProfile] = useState<LearningProfile | null>(null);
+  const [memoryPerformanceOverview, setMemoryPerformanceOverview] = useState<Record<string, unknown> | null>(null);
+  const [memoryLastUpdatedAt, setMemoryLastUpdatedAt] = useState<string | null>(null);
   // UPGRADE: User session persisted to localStorage
   const [userId, setUserIdState] = useState("student");
   const [showUserIdInput, setShowUserIdInput] = useState(false);
@@ -237,6 +269,119 @@ export default function ChatPage() {
     };
     checkBackend();
   }, []);
+
+  const refreshMemoryVisualization = async (forceRefresh: boolean = false) => {
+    setMemoryVizError(null);
+    if (!memoryTimelineEntries.length) {
+      setMemoryVizLoading(true);
+    }
+
+    try {
+      const [timelineRes, confidenceRes, summaryRes] = await Promise.all([
+        api.getMemoryTimeline(userId, 50),
+        api.getMemoryConfidence(userId, 6, 180),
+        api.getMemoryCognitiveSummary(userId, forceRefresh),
+      ]);
+
+      const timelinePayload = (timelineRes.data as Record<string, unknown> | undefined) || {};
+      const timelineRaw = Array.isArray(timelinePayload.timeline)
+        ? (timelinePayload.timeline as Record<string, unknown>[])
+        : [];
+      const parsedTimeline: TimelineEntry[] = timelineRaw.map((row, idx) => ({
+        session_id: Number(row.session_id ?? idx + 1),
+        timestamp: String(row.timestamp ?? new Date().toISOString()),
+        type: String(row.type ?? "study_session"),
+        source: String(row.source ?? "memory"),
+        topic: String(row.topic ?? "general"),
+        confidence: Number(row.confidence ?? 0.65),
+        content_preview: String(row.content_preview ?? ""),
+      }));
+
+      const confidencePayload = (confidenceRes.data as Record<string, unknown> | undefined) || {};
+      const confidenceRaw = Array.isArray(confidencePayload.topic_series)
+        ? (confidencePayload.topic_series as Record<string, unknown>[])
+        : [];
+      const parsedSeries: ConfidenceSeries[] = confidenceRaw.map((row) => {
+        const pointRows = Array.isArray(row.points) ? (row.points as Record<string, unknown>[]) : [];
+        return {
+          topic: String(row.topic ?? "general"),
+          sessions_studied: Number(row.sessions_studied ?? pointRows.length),
+          current_confidence: Number(row.current_confidence ?? 0.65),
+          improvement: Number(row.improvement ?? 0),
+          avg_quiz_score_ratio:
+            typeof row.avg_quiz_score_ratio === "number"
+              ? Number(row.avg_quiz_score_ratio)
+              : null,
+          mastery_score:
+            typeof row.mastery_score === "number"
+              ? Number(row.mastery_score)
+              : undefined,
+          weak_signal_count:
+            typeof row.weak_signal_count === "number"
+              ? Number(row.weak_signal_count)
+              : undefined,
+          performance_label:
+            typeof row.performance_label === "string"
+              ? String(row.performance_label)
+              : undefined,
+          points: pointRows.map((point, idx) => ({
+            session_index: Number(point.session_index ?? idx + 1),
+            timestamp: String(point.timestamp ?? new Date().toISOString()),
+            confidence: Number(point.confidence ?? 0.65),
+          })),
+        };
+      });
+
+      const summaryPayload = (summaryRes.data as Record<string, unknown> | undefined) || {};
+      const learningProfileRaw = summaryPayload.learning_profile as Record<string, unknown> | undefined;
+      const learningProfile: LearningProfile | null = learningProfileRaw
+        ? {
+            strengths: Array.isArray(learningProfileRaw.strengths)
+              ? (learningProfileRaw.strengths as string[])
+              : [],
+            weaknesses: Array.isArray(learningProfileRaw.weaknesses)
+              ? (learningProfileRaw.weaknesses as string[])
+              : [],
+            interests: Array.isArray(learningProfileRaw.interests)
+              ? (learningProfileRaw.interests as string[])
+              : [],
+            patterns: Array.isArray(learningProfileRaw.patterns)
+              ? (learningProfileRaw.patterns as string[])
+              : [],
+            total_sessions: Number(learningProfileRaw.total_sessions ?? 0),
+            topics_studied: Number(learningProfileRaw.topics_studied ?? 0),
+            average_confidence: Number(learningProfileRaw.average_confidence ?? 0),
+          }
+        : null;
+
+      setMemoryTimelineEntries(parsedTimeline);
+      setMemoryConfidenceSeries(parsedSeries);
+      setMemoryPerformanceOverview(
+        (confidencePayload.performance_overview as Record<string, unknown> | undefined) || null
+      );
+      setMemorySummaryText(String(summaryPayload.summary ?? ""));
+      setMemoryLearningProfile(learningProfile);
+      setMemoryLastUpdatedAt(new Date().toISOString());
+
+      if (
+        typeof timelineRes.demo_mode === "boolean" ||
+        typeof confidenceRes.demo_mode === "boolean" ||
+        typeof summaryRes.demo_mode === "boolean"
+      ) {
+        setLastDemoMode(
+          timelineRes.demo_mode ?? confidenceRes.demo_mode ?? summaryRes.demo_mode ?? null
+        );
+      }
+    } catch (error) {
+      setMemoryVizError(
+        `Could not refresh live memory visualization: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`
+      );
+    } finally {
+      setMemoryVizLoading(false);
+    }
+  };
   const handleSend = async () => {
     // Resonance and Contagion use header topic field, not main input
     const requiresInput = [
@@ -581,6 +726,10 @@ export default function ChatPage() {
       void handleSend();
       return;
     }
+    if (activeFeature === "graphs") {
+      void refreshMemoryVisualization(true);
+      return;
+    }
     if (activeFeature === "contagion") {
       setContext((prev) => ({ ...prev, errorPattern: prompt }));
     }
@@ -895,6 +1044,7 @@ export default function ChatPage() {
       setQuizQuestions([]);
       setQuizAnswers([]);
       setQuizStartedAt(null);
+
     } catch (error) {
       setMessages((prev) => [
         ...prev,
@@ -1240,20 +1390,22 @@ export default function ChatPage() {
           </div>
         </header>
         <main className="flex-1 scroll-smooth overflow-y-auto p-6 md:p-10">
-          <div className="space-y-4">
-            {messages.map((msg) => (
-              <MessageBubble
-                key={msg.id}
-                message={msg}
-                onFeedback={submitMessageFeedback}
-                feedbackRating={feedbackByMessageId[msg.id]}
-                feedbackLoading={!!feedbackLoadingByMessageId[msg.id]}
-              />
-            ))}
-            {loading && <LoadingBubble />}
-            <div ref={messagesEndRef} />
-          </div>
-          {messages.length <= 1 && !loading && (
+          {activeFeature !== "graphs" && (
+            <div className="space-y-4">
+              {messages.map((msg) => (
+                <MessageBubble
+                  key={msg.id}
+                  message={msg}
+                  onFeedback={submitMessageFeedback}
+                  feedbackRating={feedbackByMessageId[msg.id]}
+                  feedbackLoading={!!feedbackLoadingByMessageId[msg.id]}
+                />
+              ))}
+              {loading && <LoadingBubble />}
+              <div ref={messagesEndRef} />
+            </div>
+          )}
+          {activeFeature !== "graphs" && messages.length <= 1 && !loading && (
             <div className="mt-12">
               <h3 className="mb-6 text-center text-[15px] font-medium tracking-wide text-zinc-400 uppercase">
                 Suggestions
@@ -1285,7 +1437,7 @@ export default function ChatPage() {
                 ) : (
                   <>
                     <CubeIcon className="mr-2 h-5 w-5" />
-                    Predict My Next Challenge
+                    Show Roadmap 
                   </>
                 )}
               </Button>
@@ -1419,6 +1571,75 @@ export default function ChatPage() {
                       </Button>
                     </div>
                   )}
+                </CardContent>
+              </Card>
+            </div>
+          ) : activeFeature === "graphs" ? (
+            <div className="mx-auto flex w-full max-w-5xl flex-col gap-5">
+              <Card className="border-zinc-700/60 bg-zinc-900/70 backdrop-blur-sm">
+                <CardHeader>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <CardTitle className="text-zinc-100">Live Learning Visualization</CardTitle>
+                    <Button
+                      onClick={() => {
+                        void refreshMemoryVisualization(true);
+                      }}
+                      disabled={memoryVizLoading}
+                      className="h-9 rounded-lg bg-zinc-800 px-4 text-sm text-zinc-100 hover:bg-zinc-700"
+                    >
+                      {memoryVizLoading ? "Refreshing..." : "Refresh Now"}
+                    </Button>
+                  </div>
+                  <CardDescription className="text-zinc-400">
+                    Student-specific analytics from Hindsight. Refresh updates only on button click.
+                    {memoryLastUpdatedAt && ` Last updated: ${new Date(memoryLastUpdatedAt).toLocaleTimeString()}`}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                  {memoryVizError && (
+                    <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-300">
+                      {memoryVizError}
+                    </div>
+                  )}
+
+                  {memoryPerformanceOverview && (
+                    <Card className="border-zinc-700/60 bg-zinc-950/40">
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-zinc-100">Student Performance Analysis</CardTitle>
+                      </CardHeader>
+                      <CardContent className="grid gap-3 text-sm text-zinc-300 md:grid-cols-2">
+                        <div className="rounded-lg border border-zinc-700/60 bg-zinc-900/60 p-3">
+                          <p>Topics tracked: {Number(memoryPerformanceOverview.topics_tracked ?? 0)}</p>
+                          <p>Quiz attempts: {Number(memoryPerformanceOverview.total_quiz_attempts ?? 0)}</p>
+                          <p>
+                            Avg quiz score: {typeof memoryPerformanceOverview.avg_quiz_score_ratio === "number"
+                              ? `${Math.round(Number(memoryPerformanceOverview.avg_quiz_score_ratio) * 100)}%`
+                              : "N/A"}
+                          </p>
+                        </div>
+                        <div className="rounded-lg border border-zinc-700/60 bg-zinc-900/60 p-3">
+                          <p>
+                            Strength topics: {Array.isArray(memoryPerformanceOverview.strength_topics)
+                              ? (memoryPerformanceOverview.strength_topics as string[]).join(", ") || "N/A"
+                              : "N/A"}
+                          </p>
+                          <p>
+                            Focus topics: {Array.isArray(memoryPerformanceOverview.focus_topics)
+                              ? (memoryPerformanceOverview.focus_topics as string[]).join(", ") || "N/A"
+                              : "N/A"}
+                          </p>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  <ConfidenceGraph series={memoryConfidenceSeries} loading={memoryVizLoading} />
+                  <MemoryTimeline entries={memoryTimelineEntries} loading={memoryVizLoading} />
+                  <CognitiveSummary
+                    summary={memorySummaryText}
+                    profile={memoryLearningProfile}
+                    loading={memoryVizLoading}
+                  />
                 </CardContent>
               </Card>
             </div>
@@ -1923,6 +2144,7 @@ function getPlaceholder(feature: FeatureMode): string {
     contagion:
       "What topic do you want to learn from peer approaches? (e.g., machine learning, web development)...",
     memory: "Memory view is read-only. Select another feature to chat.",
+    graphs: "Graphs view is read-only. Click Refresh Now to update analysis.",
   };
   return placeholders[feature];
 }

@@ -3,6 +3,7 @@ from fastapi import APIRouter, Query, Body
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from app.services.hindsight_service import hindsight_service
+from app.services.memory_analytics_service import memory_analytics_service
 from app.services.summary_service import summary_service
 from app.engines.reflection_engine import reflection_engine
 from app.models.memory_types import APIResponse
@@ -50,69 +51,11 @@ async def get_memory_timeline(
     - Session-by-session learning growth
     """
     try:
-        # Get all memories sorted by timestamp
-        memories = await hindsight_service.recall_all_memories(limit=limit)
-        
-        # Extract timeline entries with confidence tracking
-        timeline_entries: List[Dict[str, Any]] = []
-        topic_confidence_history: Dict[str, List[Dict[str, Any]]] = {}
-        
-        for idx, memory in enumerate(memories):
-            context = memory.get("context", {}) if isinstance(memory.get("context"), dict) else {}
-            timestamp_str = context.get("timestamp") or memory.get("timestamp") or datetime.utcnow().isoformat()
-            topic = context.get("topic") or memory.get("topic") or "general"
-            
-            # Extract confidence from memory or calculate from metadata
-            confidence = float(memory.get("confidence", 0.75) or 0.75)
-            
-            # Track confidence progression per topic
-            if topic not in topic_confidence_history:
-                topic_confidence_history[topic] = []
-            
-            topic_confidence_history[topic].append({
-                "timestamp": timestamp_str,
-                "confidence": confidence,
-                "session_index": idx + 1
-            })
-            
-            # Build timeline entry
-            timeline_entries.append({
-                "session_id": idx + 1,
-                "timestamp": timestamp_str,
-                "topic": topic,
-                "confidence": confidence,
-                "content_preview": str(memory.get("content", ""))[:100],
-                "memory_count": len(memories),
-                "session_sequence": idx + 1
-            })
-        
-        # Calculate confidence improvement per topic
-        topic_confidence_metrics = {}
-        for topic, history in topic_confidence_history.items():
-            if len(history) > 0:
-                first_confidence = history[0]["confidence"]
-                last_confidence = history[-1]["confidence"]
-                improvement = last_confidence - first_confidence
-                avg_confidence = sum(h["confidence"] for h in history) / len(history)
-                
-                topic_confidence_metrics[topic] = {
-                    "initial_confidence": first_confidence,
-                    "current_confidence": last_confidence,
-                    "improvement": improvement,
-                    "average_confidence": avg_confidence,
-                    "sessions_studied": len(history),
-                    "confidence_trajectory": history[:5]  # Last 5 sessions
-                }
+        timeline_payload = await memory_analytics_service.build_timeline(user_id=user_id, limit=limit)
         
         return APIResponse(
             status="success",
-            data={
-                "user_id": user_id,
-                "timeline": timeline_entries,
-                "topic_confidence_metrics": topic_confidence_metrics,
-                "total_sessions": len(memories),
-                "total_topics": len(topic_confidence_history),
-            },
+            data=timeline_payload,
             demo_mode=False
         )
     except Exception as e:
@@ -124,6 +67,64 @@ async def get_memory_timeline(
                 "timeline": [],
                 "topic_confidence_metrics": {}
             }
+        )
+
+
+@router.get("/confidence")
+async def get_memory_confidence(
+    user_id: str = Query("anonymous", description="User ID for tracking"),
+    top_topics: int = Query(5, ge=1, le=12, description="How many top topics to chart"),
+    limit: int = Query(120, ge=20, le=400, description="How many memories to analyze"),
+):
+    """
+    Read-only confidence analytics for visualization.
+    Additive endpoint; does not modify memory state.
+    """
+    try:
+        payload = await memory_analytics_service.build_confidence_graph(
+            user_id=user_id,
+            top_topics=top_topics,
+            limit=limit,
+        )
+        return APIResponse(status="success", data=payload, demo_mode=False)
+    except Exception as e:
+        print(f"[ERROR] Confidence graph generation failed: {e}")
+        return APIResponse(
+            status="error",
+            data={
+                "message": str(e),
+                "topic_series": [],
+                "topic_confidence_metrics": {},
+            },
+            demo_mode=True,
+        )
+
+
+@router.get("/summary")
+async def get_memory_summary(
+    user_id: str = Query("anonymous", description="User ID for profile summary"),
+    refresh: bool = Query(False, description="Force refresh cached summary"),
+):
+    """
+    Read-only cognitive summary endpoint.
+    Uses hindsight-backed analytics + deterministic reflection signals.
+    """
+    try:
+        payload = await memory_analytics_service.build_cognitive_summary(
+            user_id=user_id,
+            force_refresh=refresh,
+        )
+        return APIResponse(status="success", data=payload, demo_mode=False)
+    except Exception as e:
+        print(f"[ERROR] Memory summary generation failed: {e}")
+        return APIResponse(
+            status="error",
+            data={
+                "message": str(e),
+                "summary": "Unable to generate profile summary at this time.",
+                "learning_profile": {},
+            },
+            demo_mode=True,
         )
 
 
