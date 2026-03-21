@@ -120,6 +120,28 @@ export const api = {
     return res.json();
   },
 
+  async getMemoryTimeline(userId: string, limit: number = 40): Promise<APIResponse> {
+    const params = new URLSearchParams({ user_id: userId, limit: String(limit) });
+    const res = await fetch(`${API_URL}/memory/timeline?${params.toString()}`);
+    return res.json();
+  },
+
+  async getMemoryConfidence(userId: string, topTopics: number = 5, limit: number = 120): Promise<APIResponse> {
+    const params = new URLSearchParams({
+      user_id: userId,
+      top_topics: String(topTopics),
+      limit: String(limit),
+    });
+    const res = await fetch(`${API_URL}/memory/confidence?${params.toString()}`);
+    return res.json();
+  },
+
+  async getMemoryCognitiveSummary(userId: string, refresh: boolean = false): Promise<APIResponse> {
+    const params = new URLSearchParams({ user_id: userId, refresh: String(refresh) });
+    const res = await fetch(`${API_URL}/memory/summary?${params.toString()}`);
+    return res.json();
+  },
+
   async generateQuiz(topic: string, userId: string = 'student'): Promise<APIResponse> {
     const params = new URLSearchParams({ topic, user_id: userId });
     const res = await fetch(`${API_URL}/study/quiz?${params.toString()}`);
