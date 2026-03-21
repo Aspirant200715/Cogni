@@ -6,6 +6,7 @@ Find hidden connections between seemingly unrelated topics.
 from app.services.hindsight_service import HindsightService, hindsight_service
 from app.services.llm_service import llm_service
 from typing import Dict, Any, List
+import re
 
 class ResonanceEngine:
     """
@@ -77,27 +78,29 @@ class ResonanceEngine:
         insights = await self.hindsight.get_user_insights(user_id)
         memory_context = self._format_insights(insights)
 
-        # First check if we have hardcoded connections for common topics
-        hardcoded = self._get_demo_connections(topic)
-        is_hardcoded_real = not any(conn["topic"] == "foundational concepts" for conn in hardcoded[:1])
-        
-        if is_hardcoded_real:
-            # We have good hardcoded data for common topics (recursion, arrays, etc.)
-            connections = hardcoded
-            demo_mode = False
-            print(f"[DEBUG] Resonance: Using hardcoded connections for '{topic}'")
+        # Priority 1: Use real user-specific Hindsight memories (deterministic, non-random)
+        connections = await self._find_graph_connections(topic, user_id, memory_context)
+        demo_mode = False
+
+        if connections:
+            print(f"[DEBUG] Resonance: Using Hindsight-backed connections for '{topic}'")
         else:
-            # For new topics, use LLM to generate smart connections
-            connections = await self._generate_connections_with_llm(topic, memory_context)
-            
-            if connections and len(connections) > 0:
-                demo_mode = False
-                print(f"[DEBUG] Resonance: LLM generated {len(connections)} connections for '{topic}'")
-            else:
-                # Fall back to generic demo if LLM fails
+            # Priority 2: Curated deterministic fallback for known topics
+            hardcoded = self._get_demo_connections(topic)
+            is_curated = not any(conn["topic"] == "foundational concepts" for conn in hardcoded[:1])
+
+            if is_curated:
                 connections = hardcoded
-                demo_mode = True
-                print(f"[DEBUG] Resonance: Using demo fallback for '{topic}'")
+                print(f"[DEBUG] Resonance: Using curated fallback for '{topic}'")
+            else:
+                # Priority 3: Deterministic fallback from user insight profile.
+                connections = self._connections_from_user_insights(topic, insights)
+                if connections:
+                    print(f"[DEBUG] Resonance: Using insight-profile fallback for '{topic}'")
+                else:
+                    connections = hardcoded
+                    demo_mode = True
+                    print(f"[DEBUG] Resonance: Using generic fallback for '{topic}'")
         
         insight = self._generate_insight(topic, connections[0]) if connections else None
         
@@ -240,38 +243,159 @@ Depth: [Why learning this deepens understanding - 1-2 sentences]"""
             print(f"[DEBUG] Resonance LLM generation failed: {e}")
             return []
     
-    async def _find_graph_connections(self, topic: str, memory_context: str = "") -> List[Dict[str, Any]]:
+    def _normalize_topic(self, value: str) -> str:
+        return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+    def _extract_topic_from_text(self, text: str) -> str:
+        if not text:
+            return ""
+        patterns = [
+            r"\b(?:about|on|topic)\b\s*[:]?\s*([a-zA-Z0-9_\-\s]{2,60})",
+            r"\bquery\s+for\b\s+([a-zA-Z0-9_\-\s]{2,60})",
+            r"\bprediction\s+for\b\s+([a-zA-Z0-9_\-\s]{2,60})",
+        ]
+        for pattern in patterns:
+            m = re.search(pattern, text, flags=re.IGNORECASE)
+            if m:
+                candidate = re.sub(r"\s+", " ", m.group(1)).strip(" .,:;|-")
+                candidate = re.sub(r"^(resonance\s+query\s+for\s+)", "", candidate, flags=re.IGNORECASE).strip()
+                if candidate.lower().startswith("query for "):
+                    candidate = candidate[10:].strip()
+                candidate = re.sub(r"\bfound\s+\d+\s+connections?\b.*$", "", candidate, flags=re.IGNORECASE).strip(" .,:;|-")
+                if 1 <= len(candidate.split()) <= 6:
+                    return candidate
+        return ""
+
+    def _extract_connections_from_memories(self, current_topic: str, hindsight_results: List[Any]) -> List[Dict[str, Any]]:
+        current_norm = self._normalize_topic(current_topic)
+        counts: Dict[str, int] = {}
+
+        for row in hindsight_results:
+            if not isinstance(row, dict):
+                continue
+
+            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            candidate = str(metadata.get("topic") or metadata.get("concept") or "").strip()
+
+            if not candidate:
+                content_text = str(row.get("content") or row.get("text") or "")
+                candidate = self._extract_topic_from_text(content_text)
+
+            if not candidate:
+                continue
+
+            candidate_norm = self._normalize_topic(candidate)
+            if not candidate_norm or candidate_norm == current_norm:
+                continue
+
+            if candidate_norm.startswith("resonance query"):
+                continue
+
+            if candidate_norm in {"general", "unknown", "none", "n/a"}:
+                continue
+
+            counts[candidate] = counts.get(candidate, 0) + 1
+
+        if not counts:
+            return []
+
+        top = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        max_count = max(c for _, c in top) if top else 1
+
+        connections: List[Dict[str, Any]] = []
+        for candidate, count in top:
+            relative = count / max_count if max_count else 0.0
+            strength = round(min(0.95, max(0.60, 0.60 + 0.35 * relative)), 2)
+            connections.append(
+                {
+                    "topic": candidate,
+                    "strength": strength,
+                    "reason": f"Appears with high co-occurrence in your Hindsight learning history ({count} related memories).",
+                    "connection": f"Your prior study traces connect {current_topic} with {candidate} across retained sessions.",
+                    "depth": "Reviewing this topic can strengthen transfer learning and improve conceptual recall for the current topic.",
+                }
+            )
+
+        return connections
+
+    def _connections_from_user_insights(self, current_topic: str, insights: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        current_norm = self._normalize_topic(current_topic)
+        counts: Dict[str, int] = {}
+
+        for row in insights:
+            if not isinstance(row, dict):
+                continue
+            data = row.get("data") if isinstance(row.get("data"), dict) else {}
+            candidate = str(data.get("topic") or "").strip()
+            if not candidate:
+                continue
+
+            candidate_norm = self._normalize_topic(candidate)
+            if not candidate_norm or candidate_norm == current_norm:
+                continue
+            if candidate_norm in {"general", "unknown", "none", "n/a"}:
+                continue
+
+            counts[candidate] = counts.get(candidate, 0) + 1
+
+        if not counts:
+            return []
+
+        top = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        max_count = max(c for _, c in top) if top else 1
+        out: List[Dict[str, Any]] = []
+        for candidate, count in top:
+            relative = count / max_count if max_count else 0.0
+            strength = round(min(0.90, max(0.60, 0.60 + 0.30 * relative)), 2)
+            out.append(
+                {
+                    "topic": candidate,
+                    "strength": strength,
+                    "reason": f"This topic repeatedly appears in your learning profile ({count} insight signals).",
+                    "connection": f"Your prior learning patterns connect {current_topic} and {candidate} through recurring study behavior.",
+                    "depth": "Reinforcing this linked topic can improve retention and transfer for your current focus.",
+                }
+            )
+
+        return out
+
+    async def _find_graph_connections(self, topic: str, user_id: str, memory_context: str = "") -> List[Dict[str, Any]]:
         """
         Query Hindsight using graph strategy to find conceptually related topics.
         Uses LLM to extract meaningful connections from Hindsight results.
         """
         try:
-            # Query Hindsight with graph strategy
-            query = f"topics related to {topic} or studied together with {topic}"
-            
-            print(f"[DEBUG] Resonance: Querying Hindsight for connections to '{topic}'")
-            
-            # Use Hindsight recall with graph strategy
-            results = await self.hindsight.client.recall(
-                bank_id=self.hindsight.bank_id,
-                query=query,
-                types=["graph"],  # Use graph strategy to find connections
-                max_tokens=2000
-            )
-            
-            print(f"[DEBUG] Resonance: Got {len(results)} results from Hindsight")
-            
-            if not results or len(results) == 0:
+            if not self.hindsight.api_available or not self.hindsight.client:
                 return []
-            
-            # Use LLM to extract meaningful connections from raw Hindsight data
-            connections = await self._extract_connections_with_llm(topic, results, memory_context)
-            
-            if connections and len(connections) > 0:
-                print(f"[DEBUG] Resonance: LLM found {len(connections)} real connections")
-                return connections
-            
-            return []
+
+            query = f"topics related to {topic} or studied together with {topic}"
+            print(f"[DEBUG] Resonance: Querying Hindsight for connections to '{topic}'")
+
+            results: List[Any] = []
+            for bank in self.hindsight._bank_candidates(user_id):
+                try:
+                    rows = await self.hindsight.client.recall(
+                        bank_id=bank,
+                        query=query,
+                        types=["graph", "semantic"],
+                        max_tokens=2000,
+                    )
+                    if rows:
+                        results.extend(rows)
+                except Exception as bank_error:
+                    print(f"[DEBUG] Resonance: Hindsight recall failed for bank={bank}: {bank_error}")
+
+            print(f"[DEBUG] Resonance: Got {len(results)} total results from Hindsight")
+            if not results:
+                return []
+
+            # Prefer deterministic extraction from Hindsight records to avoid random outputs.
+            deterministic = self._extract_connections_from_memories(topic, results)
+            if deterministic:
+                return deterministic
+
+            # As a secondary option, use LLM summarization over real Hindsight results.
+            return await self._extract_connections_with_llm(topic, results, memory_context)
             
         except Exception as e:
             print(f"[DEBUG] Resonance: Hindsight API call failed: {e}")
