@@ -2034,7 +2034,10 @@ function MessageBubble({
                 .map(([key, value]) => (
                   <div
                     key={key}
-                    className="flex items-center gap-1.5 rounded-md bg-white/5 border border-white/5 px-2.5 py-1 text-zinc-400 font-medium"
+                    className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 font-medium ${getMetadataBadgeClasses(
+                      key,
+                      value
+                    )}`}
                   >
                     <span className="font-semibold capitalize">
                       {key.replace(/_/g, " ")}:
@@ -2193,6 +2196,8 @@ function formatResponse(
           unresolved_count: (data.past_history as GenericRecord | undefined)
             ?.unresolved_count,
           is_follow_up: !!data.follow_up_question,
+          question_type: questionType || undefined,
+          question_quality: qualityLabel || undefined,
         },
       };
     }
